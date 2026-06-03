@@ -4,6 +4,9 @@ openPoly is experimental software that can place **real-money orders** and that
 handles **wallet credentials and signing**. Security matters here more than in a
 typical project — please read this before reporting an issue.
 
+Public release and maintenance are led by
+[@KoNananachan](https://github.com/KoNananachan).
+
 ## Reporting a vulnerability
 
 **Do not open a public GitHub issue for security problems.** Disclose privately:

@@ -99,7 +99,7 @@ class ExitMonitor:
         # process's lifetime. Rebuilt at startup by ``bootstrap_peaks`` from
         # the order_book_snapshot table; updated every tick; dropped on close.
         # Process-restart loses anything not in that table — accepted trade-off
-        # for "no schema migration" (CLAUDE.md, 2026-05-23).
+        # for keeping runtime state out of the database schema.
         self._peak: dict[int, float] = {}
         # Tick telemetry (v18) — the "is the monitor working" heartbeat,
         # surfaced via /api/exit/log so the canvas badge / Closes tab can show

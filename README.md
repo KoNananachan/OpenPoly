@@ -12,6 +12,11 @@
   <br />
   <a href="https://tradingnews.press" target="_blank"><img src="https://img.shields.io/badge/news-TradingNews%20API-FF8C00?style=for-the-badge" alt="Powered by TradingNews API" /></a>
   <a href="https://docs.polymarket.com" target="_blank"><img src="https://img.shields.io/badge/markets-Polymarket%20API-1652F0?style=for-the-badge" alt="Powered by Polymarket API" /></a>
+
+  <p>
+    Public release, deployment, and maintenance by
+    <a href="https://github.com/KoNananachan">KoNananachan</a>.
+  </p>
 </div>
 
 Experimental live-trading system for [Polymarket](https://polymarket.com)
@@ -187,11 +192,13 @@ strategies stay local. Full contract: [`docs/architecture/02-strategy-sections.m
 ## Ethos
 
 - **MIT** licensed — open source is a mindset, not a future milestone.
+- **Published and maintained by KoNananachan** — this public repo is the canonical
+  openPoly release.
 - **Default paper mode** — live trading requires explicit opt-in.
 - **Zero hardcoded secrets** — everything via `*_ref` indirection (env / keychain).
 - **Cross-platform** — Linux / macOS first.
 
 ## License
 
-[MIT](./LICENSE) © 2026 The openPoly Authors. No warranty — see
+[MIT](./LICENSE) © 2026 KoNananachan and openPoly contributors. No warranty — see
 [DISCLAIMER](./DISCLAIMER.md).

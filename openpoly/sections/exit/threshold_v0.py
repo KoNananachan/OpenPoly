@@ -3,7 +3,8 @@
 Atomized from a prior project v8 §10: Rule 6 (take_profit), Rule 2 (max_loss) and a
 *lightweight* Rule 3 (peak_drawdown). openPoly tracks ``peak_price`` as a
 scalar but deliberately drops ``peak_exit_cost`` (the cost-adjusted form) and
-the V6 trailing_stop / LLM consult on top — see CLAUDE.md for the scoping.
+the heavier trailing-stop / LLM-consult variants. This keeps the public baseline
+deterministic, auditable, and cheap to run.
 
 The section is a pure function of its input ``MarkedPosition``: the runtime
 injects the held side's current price *and* its tracked peak price into the

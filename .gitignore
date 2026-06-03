@@ -43,7 +43,7 @@ openpoly/user_sections/*
 !openpoly/user_sections/__init__.py
 !openpoly/user_sections/README.md
 
-# Claude Code artifacts (kept local)
+# Local AI-workflow artifacts (kept local)
 .claude/
 .claude-session/
 CLAUDE.md

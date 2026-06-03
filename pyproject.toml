@@ -2,8 +2,12 @@
 name = "openpoly"
 version = "0.0.0"
 description = "Experimental Polymarket live-trading system."
+readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
+authors = [{ name = "KoNananachan" }]
+maintainers = [{ name = "KoNananachan" }]
+keywords = ["polymarket", "prediction-markets", "trading", "fastapi", "react", "sqlite"]
 dependencies = [
     "anthropic>=0.104.0",
     "eth-account>=0.13",
@@ -18,6 +22,11 @@ dependencies = [
     "web3>=6",
     "websockets>=14",
 ]
+
+[project.urls]
+Homepage = "https://github.com/KoNananachan/OpenPoly"
+Repository = "https://github.com/KoNananachan/OpenPoly"
+Issues = "https://github.com/KoNananachan/OpenPoly/issues"
 
 [dependency-groups]
 dev = [

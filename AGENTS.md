@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Orientation for AI coding agents (Claude Code, Cursor, Codex, …) working in this
+Orientation for AI coding agents working in this
 repo. Humans should start with [`README.md`](./README.md); this file is the
 machine-facing convention layer. Keep it accurate when conventions change.
 
