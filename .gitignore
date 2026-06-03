@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+build/
+.vite/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local config / secrets
+.env
+.env.local
+*.local
+
+# Logs / scratch
+*.log
+/tmp/
+
+# Git worktrees (per-feature isolated checkouts)
+.worktrees/
+
+# Local SQLite / dev DB (incl. WAL sidecar files)
+*.sqlite
+*.db
+*.db-wal
+*.db-shm
+
+# User-supplied section impls (private strategies stay local)
+openpoly/user_sections/*
+!openpoly/user_sections/__init__.py
+!openpoly/user_sections/README.md
+
+# Claude Code artifacts (kept local)
+.claude/
+.claude-session/
+CLAUDE.md
+.superpowers/
+
+# Skills CLI tooling (personal; not part of openPoly)
+.agents/
+skills-lock.json
+
+# Personal AI-workflow docs (local-only; kept off the public repo).
+# Published design docs live in docs/architecture/ and docs/deploy/.
+docs/plan/
+docs/reports/
+docs/superpowers/
+
+# Live trade source data (real on-chain tx hashes) — kept local, never published
+material/

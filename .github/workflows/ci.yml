@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Blocking gate — the test suite is hermetic (temp SQLite, sources disabled,
+      # no live keys/network) and currently green.
+      - name: Tests
+        run: uv run pytest -q
+
+      # Blocking gate — lint must pass (ruff pinned in pyproject; debt cleared).
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      # Intentionally NOT a gate: formatting is a local convention, not enforced
+      # in CI (keeps ruff-version-drift churn from blocking merges). Info only.
+      - name: Ruff format check (informational)
+        run: uv run ruff format --check .
+        continue-on-error: true
+
+  frontend:
+    name: frontend (typecheck)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: yarn
+          cache-dependency-path: frontend/yarn.lock
+
+      - name: Install
+        run: yarn install --frozen-lockfile
+
+      # Blocking gate — currently green.
+      - name: Typecheck
+        run: yarn typecheck
+
+      # Blocking gate — ESLint must pass (errors cleared).
+      - name: Lint
+        run: yarn lint
