@@ -5,6 +5,7 @@
 
   <p><b>Open, news-driven, on-chain-verifiable live trading for Polymarket.</b></p>
 
+  <a href="https://konananachan.github.io/OpenPoly/"><img src="https://img.shields.io/badge/live-demo-8957e5?style=for-the-badge&logo=react&logoColor=white" alt="Live demo" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT" /></a>
   <img src="https://img.shields.io/badge/python-3.12-blue?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.12" />
   <img src="https://img.shields.io/badge/node-%E2%89%A520-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node >= 20" />
@@ -28,6 +29,17 @@ it visually.
 > mode** and never touches funds until you explicitly switch to live. Prediction
 > markets are high risk and restricted in many jurisdictions. Read the
 > [DISCLAIMER](./DISCLAIMER.md) before going anywhere near live mode.
+
+## See the demo first (no backend, no setup)
+
+[![openPoly strategy canvas — the live-section pipeline with a node's config panel open](docs/images/strategy-canvas.jpg)](https://konananachan.github.io/OpenPoly/)
+
+**▶ Live demo: <https://konananachan.github.io/OpenPoly/>** — the real frontend
+with mock data, running entirely in your browser. Click and look around; nothing
+connects to a backend and no funds are involved. All numbers, positions, and
+news are **mock data**; clicking a live action (Run/Pause, save keys, …) just
+pops a "demo mode" notice — nothing real happens. For the full thing with a live
+paper-trading backend, use the Quickstart below.
 
 ## What it is
 

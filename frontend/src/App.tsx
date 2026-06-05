@@ -1,4 +1,10 @@
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import {
+  BrowserRouter,
+  HashRouter,
+  Navigate,
+  Route,
+  Routes,
+} from 'react-router-dom'
 import { AppShell } from './components/AppShell'
 import { CanvasPage } from './routes/CanvasPage'
 import { ActivityPage } from './routes/ActivityPage'
@@ -7,9 +13,14 @@ import { PositionsTab } from './routes/activity/PositionsTab'
 import { NewsTab } from './routes/activity/NewsTab'
 import { PositionDetail } from './routes/activity/PositionDetail'
 
+// Demo opens from file:// where path-based routing has no server to fall back
+// on — HashRouter keeps every route resolvable (index.html#/strategy). Normal
+// builds pin __DEMO__ to false, so this folds to BrowserRouter.
+const Router = __DEMO__ ? HashRouter : BrowserRouter
+
 function App() {
   return (
-    <BrowserRouter>
+    <Router>
       <Routes>
         <Route element={<AppShell />}>
           <Route index element={<Navigate to="/strategy" replace />} />
@@ -32,7 +43,7 @@ function App() {
           <Route path="*" element={<Navigate to="/strategy" replace />} />
         </Route>
       </Routes>
-    </BrowserRouter>
+    </Router>
   )
 }
 

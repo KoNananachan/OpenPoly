@@ -10,6 +10,9 @@ const API_PROXY_TARGET =
   process.env.VITE_API_PROXY_TARGET ?? 'http://127.0.0.1:8000'
 
 export default defineConfig({
+  // Pin the demo flag off for all normal dev/build. Statically false → every
+  // `if (__DEMO__)` branch and the whole src/demo graph tree-shakes away.
+  define: { __DEMO__: 'false' },
   plugins: [react(), tailwindcss()],
   server: {
     // Pin the port: localStorage (where the canvas template lives) is keyed by
