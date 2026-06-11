@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
 CLOB_BASE_URL = "https://clob.polymarket.com"
+DATA_API_BASE_URL = "https://data-api.polymarket.com"
 DEFAULT_TIMEOUT = 30.0
 
 # (raw_market, parent_event)
@@ -84,22 +85,26 @@ async def fetch_markets_by_condition_id(
     timeout: float = DEFAULT_TIMEOUT,
     client: httpx.AsyncClient | None = None,
 ) -> list[dict[str, Any]]:
-    """Fetch markets by their conditionId — used for settlement detection.
+    """Fetch *resolved* markets by their conditionId — used for settlement.
 
-    Critically does NOT pass ``closed=false`` (the discovery default), since
-    settlement detection cares precisely about markets that just closed. The
-    Gamma ``/markets`` endpoint takes a repeated ``condition_ids`` query
-    param; httpx serializes a list value with the same key per entry.
+    Passes ``closed=true``: Gamma's ``/markets`` defaults to returning only
+    open markets, so omitting the param silently drops every resolved market
+    (which is exactly what settlement needs) — they come back empty. Settlement
+    only acts on resolved markets, so ``closed=true`` is both necessary and
+    sufficient; still-open markets simply aren't returned and the caller skips
+    them. ``condition_ids`` MUST be a repeated query param — Gamma treats a
+    comma-joined value as one (unmatched) id and returns nothing.
 
     Returns the raw market dicts (caller normalizes). Empty input → empty
     output without a network call. Retries once on transient failure.
     """
     if not condition_ids:
         return []
-    # Gamma accepts comma-joined condition_ids; using a string keeps the
-    # _get_json signature (dict[str, str]) untouched.
-    params = {
-        "condition_ids": ",".join(condition_ids),
+    # List value → httpx serializes ``condition_ids=A&condition_ids=B``.
+    # ``closed=true`` is required — Gamma /markets defaults to open-only.
+    params: dict[str, str | list[str]] = {
+        "condition_ids": condition_ids,
+        "closed": "true",
         "limit": str(len(condition_ids)),
     }
     raw = await _get_json(f"{base_url}/markets", params, timeout, client)
@@ -181,9 +186,77 @@ async def fetch_book(
     return parse_clob_book(raw, token_id, depth=depth)
 
 
+async def fetch_held_condition_sides(
+    funder: str,
+    *,
+    base_url: str = DATA_API_BASE_URL,
+    timeout: float = DEFAULT_TIMEOUT,
+    client: httpx.AsyncClient | None = None,
+) -> set[tuple[str, str]]:
+    """Return the ``(condition_id, side)`` pairs the wallet holds on-chain.
+
+    Reads the Polymarket data-api ``/positions`` indexer for ``funder`` — it is
+    authoritative on what the wallet actually holds and accounts for neg-risk
+    wrapping (raw ``balanceOf`` on a token id does not). ``side`` is the held
+    outcome lowercased (``yes`` / ``no``). Only positions with a positive size
+    are included; flat (size 0) ones are omitted so the reconciliation monitor
+    treats them as exited.
+    """
+    raw = await _get_json(
+        f"{base_url}/positions",
+        {"user": funder, "sizeThreshold": "0"},
+        timeout,
+        client,
+    )
+    if not isinstance(raw, list):
+        return set()
+    held: set[tuple[str, str]] = set()
+    for pos in raw:
+        if not isinstance(pos, dict):
+            continue
+        cid = pos.get("conditionId") or pos.get("condition_id")
+        outcome = pos.get("outcome")
+        try:
+            size = float(pos.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0.0
+        if not cid or not isinstance(outcome, str) or size <= 0:
+            continue
+        held.add((str(cid), outcome.strip().lower()))
+    return held
+
+
+async def fetch_wallet_positions_value(
+    funder: str,
+    *,
+    base_url: str = DATA_API_BASE_URL,
+    timeout: float = DEFAULT_TIMEOUT,
+    client: httpx.AsyncClient | None = None,
+) -> float | None:
+    """Return the wallet's total open-position market value in USDC.
+
+    Reads the data-api ``/value`` indexer — shape ``[{"user", "value"}]``
+    (verified against the live API; matches the per-position ``size × curPrice``
+    sum). An empty list means no holdings → 0.0; an unexpected shape →
+    None (unknown), never a crash.
+    """
+    raw = await _get_json(f"{base_url}/value", {"user": funder}, timeout, client)
+    if not isinstance(raw, list):
+        return None
+    if not raw:
+        return 0.0
+    first = raw[0]
+    if not isinstance(first, dict):
+        return None
+    try:
+        return float(first["value"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 async def _get_json(
     url: str,
-    params: dict[str, str],
+    params: dict[str, str | list[str]],
     timeout: float,
     client: httpx.AsyncClient | None,
 ) -> Any:

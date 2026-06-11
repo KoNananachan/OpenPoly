@@ -47,6 +47,7 @@ class _LiveLike(Protocol):
         ts: float,
         trigger: str | None = None,
     ) -> ExecResult: ...
+    def get_collateral_balance_raw(self) -> int | None: ...
 
 
 class ExecutorDispatcher:
@@ -70,6 +71,15 @@ class ExecutorDispatcher:
         are constructed. Idempotent; safe to call even when mode=paper (live is
         pre-built so a UI-driven flip is cheap)."""
         self._live = live
+
+    def get_collateral_balance_raw(self) -> int | None:
+        """Read-only USDC collateral balance via the live executor's CLOB
+        client. None when no wallet/live executor is configured or the read
+        fails. Deliberately mode-independent — the wallet is an on-chain fact,
+        so the dashboard shows the same number in paper and live mode."""
+        if self._live is None:
+            return None
+        return self._live.get_collateral_balance_raw()
 
     def execute_buy(self, intent: OrderIntent, *, news_id: str | None, ts: float) -> ExecResult:
         if runtime_state.exec_mode == "live":

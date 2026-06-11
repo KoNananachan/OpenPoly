@@ -37,3 +37,12 @@ See [01-isolation.md](01-isolation.md).
 - `openpoly/` — Python backend (FastAPI app + event-driven pipeline + sections)
 - `frontend/` — React Flow canvas + system config panels
 - `tests/` — pytest suite
+
+## Architecture docs
+
+- [01-isolation.md](01-isolation.md) — single-system, no per-strategy isolation
+- [02-strategy-sections.md](02-strategy-sections.md) — section pipeline + fixed services
+- [03-system-config.md](03-system-config.md) — secrets / `*_ref` / config panels
+- [04-wallet-config.md](04-wallet-config.md) — wallet config (single prod wallet, M4)
+- [05-runtime-network-risk.md](05-runtime-network-risk.md) — network scope, risk budget, exit policy
+- [06-polymarket-api.md](06-polymarket-api.md) — Gamma / CLOB / Data API surfaces and how openPoly uses them

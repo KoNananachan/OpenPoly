@@ -1,14 +1,24 @@
 /**
  * Activity › Overview — P&L stat cards + the equity curve. Phase 1 of the
- * Activity redesign.
+ * Activity redesign. Wallet cards (cash + total value) read the on-chain
+ * wallet via /api/wallet/balance — ledger P&L on the left, on-chain truth
+ * on the right, so a divergence between the two is visible at a glance.
  */
 import { EquityChart } from './EquityChart'
 import { fetchEquity, type EquityResponse } from './equityClient'
 import { formatPnl, pnlClass } from './format'
 import { usePoll } from './usePoll'
+import { fetchWalletBalance, type WalletBalance } from './walletClient'
+
+function fmtUsd(n: number | null): string {
+  return n === null ? '—' : `$${n.toFixed(2)}`
+}
 
 export function OverviewTab() {
   const { data, status, error } = usePoll<EquityResponse>(fetchEquity)
+  // Backend caches for 30s — no point polling faster. A failed wallet fetch
+  // must not take down the P&L cards, so it gets its own poll + null guards.
+  const { data: wallet } = usePoll<WalletBalance>(fetchWalletBalance, 30000)
 
   if (data === null) {
     return (
@@ -21,6 +31,7 @@ export function OverviewTab() {
   }
 
   const s = data.summary
+  const noWallet = wallet !== null && !wallet.configured
   return (
     <div className="px-6 pb-6 flex flex-col gap-4">
       {status === 'error' && (
@@ -33,6 +44,21 @@ export function OverviewTab() {
         <StatCard label="Unrealized P&L" value={formatPnl(s.unrealized)} tone={pnlClass(s.unrealized)} />
         <StatCard label="Total P&L" value={formatPnl(s.total)} tone={pnlClass(s.total)} />
         <StatCard label="Open positions" value={String(s.open_positions)} tone="text-neutral-100" />
+        <StatCard
+          label="Wallet cash"
+          value={noWallet ? 'No wallet' : fmtUsd(wallet?.usdc ?? null)}
+          tone={noWallet ? 'text-neutral-500' : 'text-neutral-100'}
+        />
+        <StatCard
+          label="Wallet value"
+          value={noWallet ? 'No wallet' : fmtUsd(wallet?.total ?? null)}
+          tone={noWallet ? 'text-neutral-500' : 'text-neutral-100'}
+          sub={
+            noWallet || wallet?.positions_value == null
+              ? undefined
+              : `cash ${fmtUsd(wallet?.usdc ?? null)} + positions ${fmtUsd(wallet.positions_value)}`
+          }
+        />
       </div>
       <div className="rounded border border-neutral-800 p-3">
         <div className="text-[10px] uppercase tracking-wide text-neutral-500 mb-2">
@@ -54,10 +80,12 @@ function StatCard({
   label,
   value,
   tone,
+  sub,
 }: {
   label: string
   value: string
   tone: string
+  sub?: string
 }) {
   return (
     <div className="rounded border border-neutral-800 px-3 py-2.5">
@@ -67,6 +95,11 @@ function StatCard({
       <div className={`mt-1 text-xl font-mono font-semibold ${tone}`}>
         {value}
       </div>
+      {sub !== undefined && (
+        <div className="mt-0.5 text-[10px] font-mono text-neutral-500">
+          {sub}
+        </div>
+      )}
     </div>
   )
 }

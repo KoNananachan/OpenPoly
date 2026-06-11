@@ -38,6 +38,8 @@ from openpoly.news.manager import manager as news_source_manager
 from openpoly.portfolio import PortfolioStore
 from openpoly.runtime.exit_monitor import exit_monitor
 from openpoly.runtime.settlement_monitor import settlement_monitor
+from openpoly.runtime import reconciliation_monitor as _recon_mod
+from openpoly.runtime.reconciliation_monitor import ReconciliationMonitor
 from openpoly.runtime.orchestrator import get_orchestrator
 from openpoly.sections._registry import CatalogEntry, scan
 from openpoly.sections.news_source.tradingnews_ws import TradingNewsWSConfig
@@ -141,6 +143,24 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # so a Gamma outage doesn't stall the TP/SL loop, and vice versa.
     settlement_monitor.configure(PortfolioStore(get_session_factory()))
     await settlement_monitor.start()
+    # Reconciliation monitor — closes positions the wallet no longer holds
+    # on-chain (exited outside the ledger). Needs the funder to query the
+    # data-api, and only acts in live mode (paper positions aren't on-chain),
+    # so it's wired only when a wallet is configured.
+    if runtime_state.wallet is not None:
+        from openpoly.markets.polymarket_api import fetch_held_condition_sides
+
+        _funder = runtime_state.wallet.funder_address
+
+        async def _held_condition_sides() -> set[tuple[str, str]]:
+            return await fetch_held_condition_sides(_funder)
+
+        _recon_mod.reconciliation_monitor = ReconciliationMonitor(
+            holdings_fetcher=_held_condition_sides,
+            live_check=lambda: runtime_state.exec_mode == "live",
+        )
+        _recon_mod.reconciliation_monitor.configure(PortfolioStore(get_session_factory()))
+        await _recon_mod.reconciliation_monitor.start()
     # Embedding warm cache — uses the engine database_manager just bootstrapped
     # (init_db has created the market_embedding table); the warm loop reloads
     # cached vectors so a restart skips the cold recompute.
@@ -159,6 +179,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     market_source_manager.set_book_persist(None)
     market_source_manager.set_portfolio_store(None)
     news_source_manager.set_news_persist(None)
+    if _recon_mod.reconciliation_monitor is not None:
+        await _recon_mod.reconciliation_monitor.stop()
     await settlement_monitor.stop()
     await exit_monitor.stop()
     await embedding_manager.stop()

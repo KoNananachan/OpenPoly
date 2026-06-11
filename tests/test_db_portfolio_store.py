@@ -254,3 +254,70 @@ def test_close_position_persists_order_id_tx_hash(store) -> None:
     sell = next(f for f in fills if f.position_id == held.position_id and f.action == "sell")
     assert sell.order_id == "0xSELL"
     assert sell.tx_hash == "0xCAFE"
+
+
+# ---------- record_sell (partial-fill aware) ----------
+
+
+def test_record_sell_full_closes_position(store) -> None:
+    """Selling the full open qty behaves like close_position."""
+    held = _open(store, price=0.40, qty=10.0)
+    rec = store.record_sell(
+        held.position_id,
+        sold_qty=10.0,
+        sell_price=0.55,
+        ts=200.0,
+        close_reason="take_profit",
+        trigger="take_profit",
+    )
+    assert rec.status == "closed"
+    assert rec.qty == 10.0
+    assert rec.realized_pnl == pytest.approx((0.55 - 0.40) * 10.0)
+    sell = next(f for f in store.list_fills() if f.action == "sell")
+    assert sell.qty == 10.0
+
+
+def test_record_sell_partial_keeps_open_with_reduced_qty(store) -> None:
+    """A partial fill must reduce the open qty and leave the position OPEN —
+    not mark the whole position closed (which strands the unsold remainder
+    on-chain as an orphan)."""
+    held = _open(store, price=0.40, qty=18.0)
+    rec = store.record_sell(
+        held.position_id,
+        sold_qty=15.0,
+        sell_price=0.55,
+        ts=200.0,
+        close_reason="stop_loss",
+        trigger="stop_loss",
+    )
+    assert rec.status == "open"
+    assert rec.qty == pytest.approx(3.0)  # 18 - 15 remaining
+    assert rec.realized_pnl == pytest.approx((0.55 - 0.40) * 15.0)  # only sold qty
+    fills = store.list_fills()
+    sell = next(f for f in fills if f.action == "sell")
+    assert sell.qty == pytest.approx(15.0)  # records ACTUAL filled qty
+
+
+def test_record_sell_accrues_realized_across_partials(store) -> None:
+    """Realized PnL accrues across successive partial sells; the position
+    closes only when fully sold, with the summed realized."""
+    held = _open(store, price=0.40, qty=18.0)
+    store.record_sell(
+        held.position_id,
+        sold_qty=15.0,
+        sell_price=0.55,
+        ts=200.0,
+        close_reason="stop_loss",
+        trigger="stop_loss",
+    )
+    rec = store.record_sell(
+        held.position_id,
+        sold_qty=3.0,
+        sell_price=0.60,
+        ts=210.0,
+        close_reason="stop_loss",
+        trigger="stop_loss",
+    )
+    assert rec.status == "closed"
+    assert rec.realized_pnl == pytest.approx((0.55 - 0.40) * 15.0 + (0.60 - 0.40) * 3.0)
+    assert len([f for f in store.list_fills() if f.action == "sell"]) == 2

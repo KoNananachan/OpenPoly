@@ -14,7 +14,7 @@ import openpoly.api.wallet_routes as wallet_routes
 # Anvil's deterministic dev key #0 — public, well-known, safe to bake into tests.
 TEST_PRIVKEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 TEST_SIGNER_ADDRESS = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-TEST_FUNDER = "0x1234567890123456789012345678901234567890"
+TEST_FUNDER = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 
 
 @pytest.fixture
@@ -127,3 +127,93 @@ def test_response_never_includes_private_key(
     # The 64-hex tail (without 0x) also must not appear
     assert TEST_PRIVKEY[2:] not in put.text
     assert TEST_PRIVKEY[2:] not in get.text
+
+
+# ---------- GET /api/wallet/balance (W3) ----------
+
+
+@pytest.fixture
+def balance_env(env: TestClient, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    """env + reset the module-level balance cache between tests."""
+    monkeypatch.setattr(wallet_routes, "_balance_cache", None)
+    return env
+
+
+def _set_wallet(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENPOLY_POLYMARKET_PK", TEST_PRIVKEY)
+    wallet_routes.runtime_state.set_wallet(
+        wallet_routes.WalletSpec(
+            private_key_ref="env:OPENPOLY_POLYMARKET_PK",
+            funder_address=TEST_FUNDER,
+        )
+    )
+
+
+def test_balance_unconfigured_returns_configured_false(balance_env: TestClient) -> None:
+    r = balance_env.get("/api/wallet/balance")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["configured"] is False
+    assert body["usdc"] is None and body["total"] is None
+
+
+def test_balance_both_sources_ok(balance_env: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_wallet(monkeypatch)
+    monkeypatch.setattr(wallet_routes.executor, "get_collateral_balance_raw", lambda: 162_199_200)
+
+    async def _fake_value(funder: str) -> float:
+        assert funder == TEST_FUNDER
+        return 162.1992
+
+    monkeypatch.setattr(wallet_routes, "fetch_wallet_positions_value", _fake_value)
+
+    r = balance_env.get("/api/wallet/balance")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["configured"] is True
+    assert body["usdc"] == pytest.approx(162.1992)
+    assert body["positions_value"] == pytest.approx(162.1992)
+    assert body["total"] == pytest.approx(324.3984)
+
+
+def test_balance_single_source_failure_is_null_not_500(
+    balance_env: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_wallet(monkeypatch)
+    monkeypatch.setattr(wallet_routes.executor, "get_collateral_balance_raw", lambda: None)
+
+    async def _fake_value(funder: str) -> float:
+        return 162.1992
+
+    monkeypatch.setattr(wallet_routes, "fetch_wallet_positions_value", _fake_value)
+
+    r = balance_env.get("/api/wallet/balance")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["usdc"] is None
+    assert body["positions_value"] == pytest.approx(162.1992)
+    assert body["total"] is None  # can't sum with an unknown
+
+
+def test_balance_cached_within_ttl(
+    balance_env: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_wallet(monkeypatch)
+    calls = {"clob": 0, "value": 0}
+
+    def _clob():
+        calls["clob"] += 1
+        return 100_000_000
+
+    async def _fake_value(funder: str) -> float:
+        calls["value"] += 1
+        return 50.0
+
+    monkeypatch.setattr(wallet_routes.executor, "get_collateral_balance_raw", _clob)
+    monkeypatch.setattr(wallet_routes, "fetch_wallet_positions_value", _fake_value)
+
+    r1 = balance_env.get("/api/wallet/balance")
+    r2 = balance_env.get("/api/wallet/balance")
+    assert r1.json()["total"] == pytest.approx(150.0)
+    assert r2.json() == r1.json()
+    assert calls == {"clob": 1, "value": 1}  # second hit served from cache

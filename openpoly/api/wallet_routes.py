@@ -19,8 +19,10 @@ guarantee.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import time
 from typing import Literal
 
 from eth_account import Account
@@ -28,7 +30,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from openpoly.api.portfolio_routes import get_portfolio_store
+from openpoly.execution import executor
 from openpoly.execution.live_executor import build_live_executor
+from openpoly.markets.polymarket_api import fetch_wallet_positions_value
 from openpoly.news.secrets import SecretsError, resolve
 from openpoly.portfolio import PortfolioStore
 from openpoly.wallet.runtime_state import WalletSpec, runtime_state
@@ -304,3 +308,60 @@ def set_mode(
 @router.get("/api/system/mode", response_model=SetModeResponse)
 def get_mode() -> SetModeResponse:
     return SetModeResponse(mode=runtime_state.exec_mode)
+
+
+# ---------- wallet balance (dashboard) ----------
+
+_BALANCE_CACHE_TTL_SECONDS = 30.0
+# (fetched_at, payload) — one wallet, one slot. Keeps the frontend's poll from
+# hammering the CLOB / data-api; 30s staleness is fine for a display card.
+_balance_cache: tuple[float, dict] | None = None
+
+
+class WalletBalanceResponse(BaseModel):
+    configured: bool
+    usdc: float | None = None
+    positions_value: float | None = None
+    total: float | None = None
+    ts: float | None = None
+
+
+@router.get("/api/wallet/balance", response_model=WalletBalanceResponse)
+async def get_wallet_balance() -> WalletBalanceResponse:
+    """USDC cash + open-position market value for the configured wallet.
+
+    Mode-independent — the wallet is an on-chain fact, so the card reads the
+    same in paper and live mode. No wallet → ``configured: false`` (200, not
+    an error: the unconfigured paper deployment is the open-source default).
+    Either source failing yields ``null`` for its field, never a 500.
+    """
+    global _balance_cache
+    wallet = runtime_state.wallet
+    if wallet is None:
+        return WalletBalanceResponse(configured=False)
+
+    now = time.time()
+    if _balance_cache is not None and now - _balance_cache[0] < _BALANCE_CACHE_TTL_SECONDS:
+        return WalletBalanceResponse(**_balance_cache[1])
+
+    # The collateral read is a sync CLOB network round-trip — offload it so a
+    # slow CLOB can't starve the event loop (docs/architecture/05).
+    raw = await asyncio.to_thread(executor.get_collateral_balance_raw)
+    usdc = raw / 1e6 if raw is not None else None
+
+    try:
+        positions_value = await fetch_wallet_positions_value(wallet.funder_address)
+    except Exception as exc:  # noqa: BLE001 — display endpoint, degrade to null
+        logger.warning("positions value fetch failed: %s", exc)
+        positions_value = None
+
+    total = usdc + positions_value if usdc is not None and positions_value is not None else None
+    payload = {
+        "configured": True,
+        "usdc": usdc,
+        "positions_value": positions_value,
+        "total": total,
+        "ts": now,
+    }
+    _balance_cache = (now, payload)
+    return WalletBalanceResponse(**payload)

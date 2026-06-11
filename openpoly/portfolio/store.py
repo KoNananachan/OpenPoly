@@ -24,6 +24,10 @@ from openpoly.portfolio.models import (
     Side,
 )
 
+# A residual qty at or below this (Polymarket sizes are ≤6 decimals) counts as
+# fully sold — closes the position rather than leaving a dust remainder open.
+_QTY_EPS = 1e-6
+
 
 def _to_held(row: PositionRow) -> HeldPosition:
     return HeldPosition(
@@ -175,7 +179,62 @@ class PortfolioStore:
             pos.status = "closed"
             pos.closed_at = ts
             pos.close_reason = close_reason
-            pos.realized_pnl = realized
+            # Accrue (not overwrite): a position partially sold via record_sell
+            # already carries realized PnL on the sold portion.
+            pos.realized_pnl = (pos.realized_pnl or 0.0) + realized
+            session.commit()
+            return _to_record(pos)
+
+    def record_sell(
+        self,
+        position_id: int,
+        *,
+        sold_qty: float,
+        sell_price: float,
+        ts: float,
+        close_reason: CloseReason,
+        trigger: str | None = None,
+        order_id: str | None = None,
+        tx_hash: str | None = None,
+    ) -> PositionRecord:
+        """Record a (possibly partial) sell against an open position.
+
+        Closes the position only when ``sold_qty`` covers the full remaining
+        qty; a partial fill reduces ``qty`` and leaves the position OPEN so the
+        next exit tick sells the remainder — otherwise the unsold tokens are
+        stranded on-chain as an orphan (the orphaned-remainder bug). Realized PnL accrues
+        across partials. Raises ``ValueError`` if missing or not open.
+        """
+        with self._session_factory() as session:
+            pos = session.get(PositionRow, position_id)
+            if pos is None:
+                raise ValueError(f"position {position_id} not found")
+            if pos.status != "open":
+                raise ValueError(f"position {position_id} is {pos.status}, not open")
+            sold = min(sold_qty, pos.qty)
+            session.add(
+                FillRow(
+                    ts=ts,
+                    market_id=pos.market_id,
+                    side=pos.side,
+                    action="sell",
+                    price=sell_price,
+                    qty=sold,
+                    fee=0.0,
+                    position_id=pos.id,
+                    news_id=None,
+                    trigger=trigger,
+                    order_id=order_id,
+                    tx_hash=tx_hash,
+                )
+            )
+            pos.realized_pnl = (pos.realized_pnl or 0.0) + (sell_price - pos.avg_entry_price) * sold
+            if pos.qty - sold <= _QTY_EPS:
+                pos.status = "closed"
+                pos.closed_at = ts
+                pos.close_reason = close_reason
+            else:
+                pos.qty = pos.qty - sold
             session.commit()
             return _to_record(pos)
 

@@ -43,6 +43,7 @@ from py_clob_client_v2 import ClobClient, OrderArgs, OrderType, Side  # noqa: E4
 from py_clob_client_v2.clob_types import (  # noqa: E402
     AssetType,
     BalanceAllowanceParams,
+    OrderPayload,
     PartialCreateOrderOptions,
 )
 
@@ -51,6 +52,7 @@ __all__ = [
     "BalanceAllowanceParams",
     "ClobClient",
     "OrderArgs",
+    "OrderPayload",
     "OrderType",
     "PartialCreateOrderOptions",
     "Side",

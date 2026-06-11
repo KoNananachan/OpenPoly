@@ -17,7 +17,14 @@ from typing import Literal
 Side = Literal["yes", "no"]
 Action = Literal["buy", "sell"]
 Status = Literal["open", "closed"]
-CloseReason = Literal["take_profit", "stop_loss", "settlement", "kill_switch", "manual"]
+CloseReason = Literal[
+    "take_profit",
+    "stop_loss",
+    "settlement",
+    "kill_switch",
+    "manual",
+    "reconciled",
+]
 
 
 @dataclass(frozen=True)

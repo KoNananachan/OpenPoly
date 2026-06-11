@@ -142,3 +142,26 @@ def test_configure_paper_proxies_to_paper_executor(fresh_runtime_state) -> None:
     sentinel = object()
     d.configure_paper(sentinel)  # type: ignore[arg-type]
     assert configured_with["obj"] is sentinel
+
+
+# ---------- get_collateral_balance_raw (wallet-balance W2) ----------
+
+
+class _FakeBalanceLive:
+    def get_collateral_balance_raw(self):
+        return 162_199_200
+
+
+def test_collateral_balance_delegates_to_live(fresh_runtime_state) -> None:
+    """Deliberately mode-independent — the wallet is an on-chain fact; the
+    balance must read the same in paper mode (mode defaults to paper here)."""
+    calls = _Calls()
+    d = ExecutorDispatcher(paper=_FakeExecutor(calls, "paper"), live=_FakeBalanceLive())
+    assert fresh_runtime_state.exec_mode == "paper"
+    assert d.get_collateral_balance_raw() == 162_199_200
+
+
+def test_collateral_balance_none_when_live_unconfigured(fresh_runtime_state) -> None:
+    calls = _Calls()
+    d = ExecutorDispatcher(paper=_FakeExecutor(calls, "paper"), live=None)
+    assert d.get_collateral_balance_raw() is None

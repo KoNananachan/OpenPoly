@@ -36,6 +36,7 @@ from openpoly.execution.clob_patch import (
     AssetType,
     BalanceAllowanceParams,
     OrderArgs,
+    OrderPayload,
     OrderType,
     PartialCreateOrderOptions,
     Side,
@@ -60,6 +61,11 @@ _MIN_NOTIONAL_PUSD = 1.10
 _CTF_DECIMALS = 6  # CTF / Polymarket shares are 1e6 base units
 _CTF_POLL_ATTEMPTS = 5  # SELL right after BUY can hit cache lag; ~5s total
 _CTF_POLL_SLEEP = 1.0
+# The on-chain SELL is irreversible; persisting the DB close must survive a
+# transient write failure (locked SQLite, brief error) or the position is left
+# phantom-open with its tokens already gone (root cause of stuck phantom-open positions).
+_CLOSE_PERSIST_ATTEMPTS = 5
+_CLOSE_PERSIST_SLEEP = 0.5
 
 
 def _quantize_size(qty: float, price: float) -> float:
@@ -94,6 +100,8 @@ class _ClobClient(Protocol):
     ) -> dict[str, Any]: ...
     def update_balance_allowance(self, params: BalanceAllowanceParams) -> Any: ...
     def get_balance_allowance(self, params: BalanceAllowanceParams) -> dict[str, Any]: ...
+    def cancel_order(self, payload: OrderPayload) -> Any: ...
+    def get_order(self, order_id: str) -> dict[str, Any]: ...
 
 
 class LiveExecutor:
@@ -107,6 +115,83 @@ class LiveExecutor:
     ) -> None:
         self._store = portfolio
         self._clob = clob_client
+
+    def _settle_resting_remainder(
+        self, order_id: str | None, reported_qty: float, size: float
+    ) -> float:
+        """After a partial immediate fill, cancel the GTC remainder so it
+        cannot fill later untracked (a live orphan incident: a partial fill whose
+        resting remainder filled later invisibly). Returns the order's
+        final matched qty — ``get_order`` after the cancel covers a fill that
+        raced it; never less than what the response already reported."""
+        if reported_qty >= size - 1e-9 or not order_id:
+            return reported_qty  # full fill — nothing resting
+        try:
+            self._clob.cancel_order(OrderPayload(orderID=order_id))
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "RESTING ORDER ALERT: cancel failed for %s (%s) — remainder "
+                "may fill untracked; reverse-reconciliation will flag it",
+                order_id,
+                exc,
+            )
+            return reported_qty
+        try:
+            final = float(self._clob.get_order(order_id).get("size_matched") or 0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("get_order after cancel failed for %s: %s", order_id, exc)
+            return reported_qty
+        return max(final, reported_qty)
+
+    def get_collateral_balance_raw(self) -> int | None:
+        """Wallet USDC (collateral) balance in raw 1e6 units — None when the
+        read fails. Read-only; serves the wallet-balance dashboard endpoint."""
+        try:
+            self._clob.update_balance_allowance(
+                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            )
+            ba = self._clob.get_balance_allowance(
+                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            )
+            return int(ba.get("balance", 0))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("collateral balance read failed: %s", exc)
+            return None
+
+    # ---------- lost-response confirmation (R5) ----------
+
+    def _read_ctf_balance_raw(self, token_id: str) -> int | None:
+        """Refresh + read the wallet's CTF balance for ``token_id`` (raw 1e6
+        units). None when the read fails — callers treat that as 'unknown'."""
+        try:
+            self._clob.update_balance_allowance(
+                BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=token_id)
+            )
+            ba = self._clob.get_balance_allowance(
+                BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=token_id)
+            )
+            return int(ba.get("balance", 0))
+        except (TypeError, ValueError):
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("CTF balance read failed: %s", exc)
+            return None
+
+    def _confirm_lost_order_qty(self, token_id: str, pre_raw: int, direction: str) -> float:
+        """After a lost order response, poll the CTF balance to see whether the
+        order actually filled. A network exception from create_and_post_order
+        does NOT mean no fill — the server may have matched the order and only
+        the response was lost (a confirmed live drift incident). Returns the filled token
+        qty inferred from the balance delta (0.0 = no change observed)."""
+        for attempt in range(_CTF_POLL_ATTEMPTS):
+            now_raw = self._read_ctf_balance_raw(token_id)
+            if now_raw is not None:
+                delta = pre_raw - now_raw if direction == "drop" else now_raw - pre_raw
+                if delta > 0:
+                    return delta / (10**_CTF_DECIMALS)
+            if attempt < _CTF_POLL_ATTEMPTS - 1:
+                time.sleep(_CTF_POLL_SLEEP)
+        return 0.0
 
     def execute_buy(self, intent: OrderIntent, *, news_id: str | None, ts: float) -> ExecResult:
         catalog = market_source_manager.store
@@ -138,6 +223,10 @@ class LiveExecutor:
         except Exception as exc:  # noqa: BLE001
             logger.warning("update_balance_allowance(COLLATERAL) failed: %s", exc)
 
+        # Pre-order CTF balance — the baseline for lost-response confirmation
+        # below. None = read failed; confirmation then unavailable.
+        pre_raw = self._read_ctf_balance_raw(token_id)
+
         # GTC + crossing the spread acts like an aggressive market order. We
         # use GTC (not FAK) because a prior project's production verified it end-to-end
         # on 2026-05-05 / smoke verified again 2026-05-24; FAK hits stricter
@@ -154,6 +243,41 @@ class LiveExecutor:
                 order_type=OrderType.GTC,
             )
         except Exception as exc:  # noqa: BLE001
+            # The order may have filled despite the lost response — confirm via
+            # the balance before declaring failure (R5 at-least-once).
+            got = (
+                self._confirm_lost_order_qty(token_id, pre_raw, "rise")
+                if pre_raw is not None
+                else 0.0
+            )
+            if got > 0:
+                actual_qty = min(got, size)
+                # Response (and with it the real fill price) is lost; record at
+                # our limit — actual cost can only be ≤ limit, so conservative.
+                logger.warning(
+                    "buy response lost (%s) but CTF balance rose %.4f — "
+                    "recording fill at limit price %.4f",
+                    type(exc).__name__,
+                    actual_qty,
+                    intent.price,
+                )
+                held = self._store.open_position(
+                    market_id=intent.market_id,
+                    side=intent.side,
+                    token_id=token_id,
+                    condition_id=market.condition_id,
+                    price=intent.price,
+                    qty=actual_qty,
+                    ts=ts,
+                    news_id=news_id,
+                    order_id=None,
+                    tx_hash=None,
+                )
+                return ExecResult.ok(
+                    price=intent.price,
+                    qty=actual_qty,
+                    position_id=held.position_id,
+                )
             logger.error("live buy submit failed (%s): %s", type(exc).__name__, exc)
             return ExecResult.skip(f"live_error:{type(exc).__name__}")
 
@@ -166,9 +290,12 @@ class LiveExecutor:
             return ExecResult.skip("live_unparseable")
         if taking <= 0:
             return ExecResult.skip("live_no_match")
-        actual_price = making / taking
-        actual_qty = taking
         order_id = resp.get("orderID")
+        # Partial fill → cancel the resting remainder + take the final matched
+        # qty. The raced-extra portion (if any) filled at our limit price, so
+        # pricing it at the response average is conservative-enough (≤1 tick).
+        actual_qty = self._settle_resting_remainder(order_id, taking, size)
+        actual_price = making / taking
         tx_hashes = resp.get("transactionsHashes") or []
         tx_hash = tx_hashes[0] if tx_hashes else None
 
@@ -221,33 +348,17 @@ class LiveExecutor:
             return ExecResult.skip("min_notional_below_floor")
 
         # Poll CTF balance — handles cache lag when SELL fires shortly after
-        # BUY (smoke 2026-05-24 saw ~3-5s lag). update_balance_allowance is
+        # BUY (live smoke testing saw ~3-5s lag). update_balance_allowance is
         # the documented refresh trigger; we then read to confirm.
         need_raw = int(size * (10**_CTF_DECIMALS))
         synced = False
+        pre_raw = 0  # balance at gate-sync time — lost-response baseline
         for attempt in range(_CTF_POLL_ATTEMPTS):
-            try:
-                self._clob.update_balance_allowance(
-                    BalanceAllowanceParams(
-                        asset_type=AssetType.CONDITIONAL,
-                        token_id=position.token_id,
-                    )
-                )
-                ba = self._clob.get_balance_allowance(
-                    BalanceAllowanceParams(
-                        asset_type=AssetType.CONDITIONAL,
-                        token_id=position.token_id,
-                    )
-                )
-                try:
-                    have_raw = int(ba.get("balance", 0))
-                except (TypeError, ValueError):
-                    have_raw = 0
-                if have_raw >= need_raw:
-                    synced = True
-                    break
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("CTF balance check attempt %d failed: %s", attempt + 1, exc)
+            have_raw = self._read_ctf_balance_raw(position.token_id)
+            if have_raw is not None and have_raw >= need_raw:
+                synced = True
+                pre_raw = have_raw
+                break
             if attempt < _CTF_POLL_ATTEMPTS - 1:
                 time.sleep(_CTF_POLL_SLEEP)
         if not synced:
@@ -265,6 +376,30 @@ class LiveExecutor:
                 order_type=OrderType.GTC,
             )
         except Exception as exc:  # noqa: BLE001
+            # The order may have filled despite the lost response — confirm via
+            # the balance before declaring failure (R5 at-least-once).
+            sold = self._confirm_lost_order_qty(position.token_id, pre_raw, "drop")
+            if sold > 0:
+                # Response (and with it the real fill price) is lost; record at
+                # our limit (bid) — actual proceeds can only be ≥ bid, so
+                # conservative.
+                logger.warning(
+                    "sell response lost (%s) but CTF balance dropped %.4f — "
+                    "recording fill at limit price %.4f",
+                    type(exc).__name__,
+                    sold,
+                    bid_price,
+                )
+                return self._persist_sell(
+                    position,
+                    actual_price=bid_price,
+                    actual_qty=min(sold, size),
+                    ts=ts,
+                    close_reason=close_reason,
+                    trigger=trigger,
+                    order_id=None,
+                    tx_hash=None,
+                )
             logger.error("live sell submit failed (%s): %s", type(exc).__name__, exc)
             return ExecResult.skip(f"live_error:{type(exc).__name__}")
 
@@ -277,21 +412,73 @@ class LiveExecutor:
             return ExecResult.skip("live_unparseable")
         if making <= 0:
             return ExecResult.skip("live_no_match")
-        actual_price = taking / making
-        actual_qty = making
-        order_id = resp.get("orderID")
-        tx_hashes = resp.get("transactionsHashes") or []
-        tx_hash = tx_hashes[0] if tx_hashes else None
-
-        self._store.close_position(
-            position.position_id,
-            sell_price=actual_price,
+        sell_order_id = resp.get("orderID")
+        # Same resting hygiene as BUY: an unsold remainder must not sit on the
+        # book filling invisibly (record_sell keeps the position open with the
+        # truly-unsold qty instead).
+        sold_qty = self._settle_resting_remainder(sell_order_id, making, size)
+        return self._persist_sell(
+            position,
+            actual_price=taking / making,
+            actual_qty=sold_qty,
             ts=ts,
             close_reason=close_reason,
             trigger=trigger,
-            order_id=order_id,
-            tx_hash=tx_hash,
+            order_id=sell_order_id,
+            tx_hash=(resp.get("transactionsHashes") or [None])[0],
         )
+
+    def _persist_sell(
+        self,
+        position: HeldPosition,
+        *,
+        actual_price: float,
+        actual_qty: float,
+        ts: float,
+        close_reason: CloseReason,
+        trigger: str | None,
+        order_id: str | None,
+        tx_hash: str | None,
+    ) -> ExecResult:
+        """Persist an already-executed on-chain sell. The fill is irreversible,
+        so the DB write retries transient failures — dropping it would leave a
+        phantom-open position for the reconciliation monitor to clean up.
+        Records the ACTUAL filled qty: a GTC sell can partially fill, and
+        record_sell keeps the position open with the remainder in that case."""
+        for attempt in range(_CLOSE_PERSIST_ATTEMPTS):
+            try:
+                self._store.record_sell(
+                    position.position_id,
+                    sold_qty=actual_qty,
+                    sell_price=actual_price,
+                    ts=ts,
+                    close_reason=close_reason,
+                    trigger=trigger,
+                    order_id=order_id,
+                    tx_hash=tx_hash,
+                )
+                break
+            except Exception as exc:  # noqa: BLE001 — on-chain fill already happened
+                if attempt < _CLOSE_PERSIST_ATTEMPTS - 1:
+                    logger.warning(
+                        "close_position attempt %d failed for position %d: %s; retrying",
+                        attempt + 1,
+                        position.position_id,
+                        exc,
+                    )
+                    time.sleep(_CLOSE_PERSIST_SLEEP)
+                    continue
+                logger.error(
+                    "CRITICAL: on-chain sell filled (order=%s tx=%s) but close_position "
+                    "failed after %d attempts for position %d: %s — tokens are gone; "
+                    "leaving open for reconciliation",
+                    order_id,
+                    tx_hash,
+                    _CLOSE_PERSIST_ATTEMPTS,
+                    position.position_id,
+                    exc,
+                )
+                return ExecResult.skip(f"close_persist_failed:{type(exc).__name__}")
         logger.info(
             "live sell filled: %s %s qty=%.4f @ %.4f (position %d, %s) order=%s",
             position.market_id,

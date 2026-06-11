@@ -8,7 +8,11 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from openpoly.markets.polymarket_api import discover_events
+from openpoly.markets.polymarket_api import (
+    discover_events,
+    fetch_held_condition_sides,
+    fetch_markets_by_condition_id,
+)
 
 
 def _mock_client(handler) -> httpx.AsyncClient:
@@ -71,6 +75,38 @@ async def test_query_params():
     assert "order=volume24hr" in seen["url"]
     assert "ascending=false" in seen["url"]
     assert "limit=50" in seen["url"]
+
+
+async def test_fetch_by_condition_id_passes_closed_true():
+    # Settlement detection must request resolved markets; Gamma /markets
+    # defaults to open-only, so closed=true is required or resolved markets
+    # silently come back empty (the orphaned-position bug this fixes).
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json=[])
+
+    async with _mock_client(handler) as client:
+        await fetch_markets_by_condition_id(["0xabc", "0xdef"], client=client)
+
+    assert "closed=true" in seen["url"]
+    # Repeated param, NOT comma-joined — Gamma returns nothing for "A,B".
+    assert "condition_ids=0xabc" in seen["url"]
+    assert "condition_ids=0xdef" in seen["url"]
+    assert "0xabc%2C0xdef" not in seen["url"]  # guard against the old comma bug
+
+
+async def test_fetch_by_condition_id_empty_input_no_call():
+    called = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called["n"] += 1
+        return httpx.Response(200, json=[])
+
+    async with _mock_client(handler) as client:
+        assert await fetch_markets_by_condition_id([], client=client) == []
+    assert called["n"] == 0  # empty input → no network call
 
 
 async def test_retries_once_then_succeeds():
@@ -214,3 +250,84 @@ async def test_fetch_market_by_id_normalize_returns_none(monkeypatch, caplog):
     assert any("missing required fields" in rec.message for rec in caplog.records), (
         "expected a warning log for silent-None case"
     )
+
+
+# ---------- fetch_held_condition_sides (data-api positions) ----------
+
+
+async def test_held_condition_sides_maps_outcome_to_side():
+    """data-api /positions → set of (conditionId, side); only size>0, and
+    outcome Yes/No mapped to yes/no."""
+    payload = [
+        {"conditionId": "0xaaa", "outcome": "Yes", "size": 34.0},
+        {"conditionId": "0xbbb", "outcome": "No", "size": 18.0},
+        {"conditionId": "0xccc", "outcome": "Yes", "size": 0.0},  # flat — excluded
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "data-api.polymarket.com" in str(request.url)
+        assert request.url.params.get("user") == "0xFUNDER"
+        return httpx.Response(200, json=payload)
+
+    async with _mock_client(handler) as client:
+        held = await fetch_held_condition_sides("0xFUNDER", client=client)
+
+    assert held == {("0xaaa", "yes"), ("0xbbb", "no")}
+
+
+async def test_held_condition_sides_empty_when_no_positions():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[])
+
+    async with _mock_client(handler) as client:
+        held = await fetch_held_condition_sides("0xFUNDER", client=client)
+
+    assert held == set()
+
+
+# ---------- fetch_wallet_positions_value (data-api /value) ----------
+
+
+async def test_wallet_positions_value_parses_singleton_list():
+    """data-api /value → [{"user": ..., "value": float}] (verified against the live API)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "data-api.polymarket.com" in str(request.url)
+        assert request.url.params.get("user") == "0xFUNDER"
+        return httpx.Response(200, json=[{"user": "0xfunder", "value": 162.1992}])
+
+    async with _mock_client(handler) as client:
+        from openpoly.markets.polymarket_api import fetch_wallet_positions_value
+
+        value = await fetch_wallet_positions_value("0xFUNDER", client=client)
+
+    assert value == pytest.approx(162.1992)
+
+
+async def test_wallet_positions_value_empty_list_is_zero():
+    """No positions → empty list → 0.0 (a wallet with no holdings is worth 0,
+    not unknown)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[])
+
+    async with _mock_client(handler) as client:
+        from openpoly.markets.polymarket_api import fetch_wallet_positions_value
+
+        value = await fetch_wallet_positions_value("0xFUNDER", client=client)
+
+    assert value == 0.0
+
+
+async def test_wallet_positions_value_bad_shape_is_none():
+    """Unexpected shape → None (unknown), never a crash."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"unexpected": "shape"})
+
+    async with _mock_client(handler) as client:
+        from openpoly.markets.polymarket_api import fetch_wallet_positions_value
+
+        value = await fetch_wallet_positions_value("0xFUNDER", client=client)
+
+    assert value is None
