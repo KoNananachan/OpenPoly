@@ -16,7 +16,7 @@ from openpoly.wallet.runtime_state import RuntimeState, WalletSpec
 
 # Anvil's deterministic dev key #0 — public, well-known, safe to bake into tests.
 TEST_PRIVKEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-TEST_FUNDER = "0x1234567890123456789012345678901234567890"
+TEST_FUNDER = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 
 # V2 exchange addresses — must match the preflight thresholds in wallet_routes.
 STANDARD_V2 = "0xE111180000d2663C0091e4f400237545B87B996B"

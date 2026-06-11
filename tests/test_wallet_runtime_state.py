@@ -31,14 +31,14 @@ def test_set_wallet_persists(state_path: Path) -> None:
     rs.set_wallet(
         WalletSpec(
             private_key_ref="env:OPENPOLY_POLYMARKET_PK",
-            funder_address="0x1234567890123456789012345678901234567890",
+            funder_address="0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         )
     )
     rs2 = RuntimeState()
     rs2.load()
     assert rs2.wallet is not None
     assert rs2.wallet.private_key_ref == "env:OPENPOLY_POLYMARKET_PK"
-    assert rs2.wallet.funder_address == "0x1234567890123456789012345678901234567890"
+    assert rs2.wallet.funder_address == "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 
 
 def test_set_mode_persists(state_path: Path) -> None:
@@ -131,7 +131,7 @@ def test_set_wallet_disk_failure_does_not_mutate_memory(
         rs.set_wallet(
             WalletSpec(
                 private_key_ref="env:OPENPOLY_POLYMARKET_PK",
-                funder_address="0x1234567890123456789012345678901234567890",
+                funder_address="0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
             )
         )
     assert rs.wallet is None  # rolled back
