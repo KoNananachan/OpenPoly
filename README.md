@@ -142,6 +142,14 @@ The data points the work at *exits and sizing*, not the signal:
   in their favor first; better entry timing and slippage control would convert
   more of those into wins.
 
+## Strategy changelog
+
+The strategy is a living thing — entry gates, exit thresholds, and risk
+brakes have all changed as paper and live data came in, and each change is
+recorded with its reasoning (including the ideas that were considered and
+rejected). See **[CHANGELOG.md](CHANGELOG.md)** for the full
+decision-by-decision history.
+
 ## Quickstart (paper mode, same machine)
 
 **Prerequisites:** [`uv`](https://docs.astral.sh/uv/) (Python toolchain) and
